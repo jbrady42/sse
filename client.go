@@ -139,39 +139,52 @@ func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch
 			}
 
 			reader := NewEventStreamReader(resp.Body)
+			eventChan := make(chan *Event)
+			errorChan := make(chan error)
+
+			go func(outCh chan *Event, erChan chan error) {
+				for {
+					// Read each new line and process the type of event
+					event, err := reader.ReadEvent()
+					if err != nil {
+						if err == io.EOF {
+							c.cleanup(resp, ch)
+							errorChan <- nil
+							return
+						}
+
+						// run user specified disconnect function
+						if c.disconnectcb != nil {
+							c.disconnectcb(c)
+						}
+						errorChan <- err
+						return
+					}
+
+					// If we get an error, ignore it.
+					if msg, err := c.processEvent(event); err == nil {
+						if len(msg.ID) > 0 {
+							c.EventID = string(msg.ID)
+						} else {
+							msg.ID = []byte(c.EventID)
+						}
+						// Send downstream
+						outCh <- msg
+					}
+
+				}
+			}(eventChan, errorChan)
 
 			for {
-				// Read each new line and process the type of event
-				event, err := reader.ReadEvent()
-				if err != nil {
-					if err == io.EOF {
-						c.cleanup(resp, ch)
-						return nil
-					}
-
-					// run user specified disconnect function
-					if c.disconnectcb != nil {
-						c.disconnectcb(c)
-					}
-
+				select {
+				case <-c.subscribed[ch]:
+					c.cleanup(resp, ch)
+					return nil
+				case err := <-errorChan:
 					return err
-				}
-
-				// If we get an error, ignore it.
-				if msg, err := c.processEvent(event); err == nil {
-					if len(msg.ID) > 0 {
-						c.EventID = string(msg.ID)
-					} else {
-						msg.ID = []byte(c.EventID)
-					}
-
-					select {
-					case <-c.subscribed[ch]:
-						c.cleanup(resp, ch)
-						return nil
-					case ch <- msg:
-						// message sent
-					}
+				case msg := <-eventChan:
+					// message sent
+					ch <- msg
 				}
 			}
 		}
