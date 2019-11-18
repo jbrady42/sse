@@ -176,15 +176,26 @@ func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch
 			}(eventChan, errorChan)
 
 			for {
+				var msg *Event
+				// Wait for message to arrive or exit
 				select {
 				case <-c.subscribed[ch]:
 					c.cleanup(resp, ch)
 					return nil
 				case err := <-errorChan:
 					return err
-				case msg := <-eventChan:
-					// message sent
-					ch <- msg
+				case msg = <-eventChan:
+				}
+
+				// Wait for message to be sent or exit
+				if msg != nil {
+					select {
+					case <-c.subscribed[ch]:
+						c.cleanup(resp, ch)
+						return nil
+					case ch <- msg:
+						// message sent
+					}
 				}
 			}
 		}
